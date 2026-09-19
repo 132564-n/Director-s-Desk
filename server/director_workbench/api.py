@@ -177,6 +177,12 @@ class SendMessageInput(StrictModel):
     attachment_ids: list[str] = Field(default_factory=list)
 
 
+class ResolveDecisionInput(StrictModel):
+    action: Literal["confirm", "defer", "reject"]
+    option_id: str | None = None
+    custom_value: str = Field(default="", max_length=2000)
+
+
 StagePath = Annotated[Stage, PathParameter(description="Production stage")]
 
 
@@ -467,6 +473,42 @@ def create_app(
             conversations.save(conversation)
         return conversation_response(conversation)
 
+    @app.post(
+        "/conversations/{conversation_id}/decisions/{decision_id}/resolve",
+        tags=["chat"],
+    )
+    def resolve_decision(
+        conversation_id: str,
+        decision_id: str,
+        body: ResolveDecisionInput,
+    ) -> dict:
+        current = find_conversation(conversation_id)
+        card = current.decisions.get(decision_id)
+        if card is None:
+            raise HTTPException(status_code=404, detail=f"决策 {decision_id} 不存在")
+        affected_artifacts: tuple[str, ...] = ()
+        if card.status.value == "confirmed" and body.action in {"confirm", "reject"}:
+            episode = find_workflow(current.episode_id).snapshot().episode
+            affected_artifacts = tuple(
+                stage.value
+                for stage, state in episode.stages.items()
+                if state.artifact is not None
+            )
+        module = ConversationModule(current)
+        try:
+            module.resolve_decision(
+                decision_id,
+                action=body.action,
+                option_id=body.option_id,
+                custom_value=body.custom_value,
+                affected_artifacts=affected_artifacts,
+            )
+        except WorkflowError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        conversation = module.snapshot()
+        conversations.save(conversation)
+        return conversation_response(conversation)
+
     def set_proposal_status(
         conversation_id: str,
         proposal_id: str,
@@ -543,6 +585,17 @@ def create_app(
             for conversation in conversations.list(episode_id)
             for proposal in conversation.proposals.values()
         ]
+        decisions = [
+            decision
+            for conversation in conversations.list(episode_id)
+            for decision in conversation.decisions.values()
+        ]
+        decisions.sort(
+            key=lambda item: (
+                item.status.value not in {"pending", "needs_review"},
+                -item.created_at.timestamp(),
+            )
+        )
         artifacts = [
             state.artifact
             for state in episode.stages.values()
@@ -551,6 +604,7 @@ def create_app(
         return jsonable_encoder(
             {
                 "proposals": [asdict(proposal) for proposal in proposals],
+                "decisions": [asdict(decision) for decision in decisions],
                 "artifacts": [asdict(artifact) for artifact in artifacts],
                 "assets": [asdict(asset) for asset in episode.assets.values()],
             }

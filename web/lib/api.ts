@@ -121,6 +121,28 @@ export function updateProposal(
   );
 }
 
+export function resolveDecision(
+  conversationId: string,
+  decisionId: string,
+  input: {
+    action: "confirm" | "defer" | "reject";
+    optionId?: string | null;
+    customValue?: string;
+  },
+) {
+  return request<Conversation>(
+    `/conversations/${encodeURIComponent(conversationId)}/decisions/${encodeURIComponent(decisionId)}/resolve`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        action: input.action,
+        option_id: input.optionId ?? null,
+        custom_value: input.customValue ?? "",
+      }),
+    },
+  );
+}
+
 export function getEpisodeShelf(id: string) {
   return request<EpisodeShelf>(`/episodes/${encodeURIComponent(id)}/shelf`);
 }

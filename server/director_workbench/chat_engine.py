@@ -8,6 +8,7 @@ from threading import Event
 from .chat import ChatMode, ConversationModule
 from .chat_repository import ConversationRepository
 from .configured_drafting import ConfiguredDirectorTeam
+from .decision_memory import DecisionCardDraft, DecisionStatus, parse_decision_drafts
 from .domain import STAGE_ORDER, Stage, StageStatus
 from .drafting import AgentRole, DemoDirectorTeam
 from .model_gateway import OpenAICompatibleAdapter
@@ -49,6 +50,28 @@ class GroupChatEngine:
             if options.autonomous and len(roles) < 2:
                 roles = self._expand_for_autonomy(conversation.members, roles)
             settings = self._model_settings.load()
+            memory_rows = self._conversations.list(conversation.episode_id)
+            confirmed_facts = []
+            rejected_options = []
+            pending_decisions = []
+            for meeting in memory_rows:
+                for card in meeting.decisions.values():
+                    if card.status is DecisionStatus.CONFIRMED:
+                        confirmed_facts.append({
+                            "scope": card.scope.value,
+                            "category": card.category.value,
+                            "question": card.question,
+                            "value": card.resolved_value,
+                            "revision": card.revision,
+                        })
+                        rejected_options.extend(
+                            option.label for option in card.options
+                            if option.id != card.selected_option_id
+                        )
+                    elif card.status is DecisionStatus.REJECTED:
+                        rejected_options.extend(option.label for option in card.options)
+                    elif card.status in {DecisionStatus.PENDING, DecisionStatus.DEFERRED}:
+                        pending_decisions.append(card.question)
             context = json.dumps({
                 "goal": conversation.goal,
                 "settings": asdict(episode.settings),
@@ -67,6 +90,11 @@ class GroupChatEngine:
                     {"sender": message.sender_name, "content": message.content}
                     for message in conversation.messages[-30:]
                 ],
+                "project_memory": {
+                    "confirmed_facts": confirmed_facts[-80:],
+                    "rejected_options": rejected_options[-80:],
+                    "pending_decisions": pending_decisions[-30:],
+                },
             }, ensure_ascii=False)
 
             self._run_round(
@@ -152,6 +180,19 @@ class GroupChatEngine:
                     "请给出总导演结论、少数意见和下一步；不能把尚未解决的分歧写成共识。",
                     3, settings, episode.title,
                 )
+            decision_drafts: tuple[DecisionCardDraft, ...] = ()
+            if chief_provider.kind is not ProviderKind.DEMO:
+                try:
+                    decision_drafts = self._extract_decisions(
+                        provider=chief_provider,
+                        model=chief_assignment.model,
+                        user_request=user_message.content,
+                        context=context,
+                        opinions=opinions,
+                        director_decision=decision,
+                    )
+                except Exception:  # noqa: BLE001 - a card failure must not lose the discussion
+                    decision_drafts = ()
             if stop.is_set():
                 return self._mark_stopped(conversation_id)
             module = ConversationModule(current)
@@ -161,6 +202,7 @@ class GroupChatEngine:
                 proposal_stage=proposal_stage,
                 proposal_title=proposal_title,
                 proposal_payload=proposal_payload,
+                decision_drafts=decision_drafts,
             )
             self._conversations.save(module.snapshot())
         # A background turn must always leave an auditable terminal state, including
@@ -232,6 +274,46 @@ class GroupChatEngine:
             user_prompt=prompt,
         )
         return completion.text.strip(), completion.model
+
+    def _extract_decisions(
+        self,
+        *,
+        provider,
+        model: str,
+        user_request: str,
+        context: str,
+        opinions: str,
+        director_decision: str,
+    ) -> tuple[DecisionCardDraft, ...]:
+        api_key = self._model_settings.api_key(provider)
+        if not api_key:
+            return ()
+        completion = OpenAICompatibleAdapter(
+            base_url=provider.base_url,
+            api_key=api_key,
+        ).complete(
+            model=model,
+            system_prompt=(
+                "你是中文 AI 漫剧项目的决策编辑。只提取必须由用户拍板的高影响创作分岔；"
+                "执行细节由团队自行决定。最多输出3项，若没有则输出空数组。"
+                "每项必须有2到4个互斥方案、恰好一个推荐方案，并说明影响和风险。"
+                "scope只能是project或episode；category只能是theme_audience、world_rule、"
+                "character、story_timeline、scene_prop、visual_asset、shot_duration、"
+                "voice_music、production_constraint、open_question。"
+                "严格输出JSON对象，不要Markdown："
+                '{"decisions":[{"question":"","context":"","scope":"episode",'
+                '"category":"open_question","options":[{"label":"","description":"",'
+                '"impact":"","risk":"","recommended":true}]}]}'
+            ),
+            user_prompt=(
+                f"用户请求：{user_request}\n项目与已确认事实：{context}\n"
+                f"本轮专业意见：{opinions}\n总导演结论：{director_decision}\n"
+                "不要重复已有待决策项，不要把已经由规则唯一决定的事项升级给用户。"
+            ),
+            json_mode=True,
+            max_tokens=1800,
+        )
+        return parse_decision_drafts(completion.text)
 
     def _demo_response(self, role: AgentRole, prompt: str, round_number: int) -> str:
         subject = prompt.strip().replace("\n", " ")[:56]

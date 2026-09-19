@@ -6,6 +6,13 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import uuid4
 
+from .decision_memory import (
+    DecisionCard,
+    DecisionCardDraft,
+    DecisionRevision,
+    DecisionStatus,
+    create_decision_cards,
+)
 from .domain import Stage
 from .drafting import AgentRole
 from .workflow import WorkflowError
@@ -82,6 +89,7 @@ class Conversation:
     archived: bool = False
     messages: list[ChatMessage] = field(default_factory=list)
     proposals: dict[str, Proposal] = field(default_factory=dict)
+    decisions: dict[str, DecisionCard] = field(default_factory=dict)
     active_turn_id: str | None = None
     max_rounds: int = 6
 
@@ -162,6 +170,7 @@ class ConversationModule:
         proposal_stage: Stage | None = None,
         proposal_title: str = "",
         proposal_payload: dict | None = None,
+        decision_drafts: tuple[DecisionCardDraft, ...] = (),
     ) -> ChatMessage:
         proposal_id = None
         decision_id = f"message-{uuid4().hex}"
@@ -189,10 +198,102 @@ class ConversationModule:
             proposal_id=proposal_id,
         )
         self._conversation.messages.append(message)
-        self._conversation.status = ConversationStatus.COMPLETE
+        cards = create_decision_cards(
+            decision_drafts,
+            episode_id=self._conversation.episode_id,
+            conversation_id=self._conversation.id,
+            source_message_id=decision_id,
+            created_at=now,
+        )
+        self._conversation.decisions.update({card.id: card for card in cards})
+        self._conversation.status = (
+            ConversationStatus.WAITING
+            if any(
+                card.status is DecisionStatus.PENDING
+                for card in self._conversation.decisions.values()
+            )
+            else ConversationStatus.COMPLETE
+        )
         self._conversation.active_turn_id = None
         self._conversation.updated_at = now
         return message
+
+    def resolve_decision(
+        self,
+        decision_id: str,
+        *,
+        action: str,
+        option_id: str | None = None,
+        custom_value: str = "",
+        affected_artifacts: tuple[str, ...] = (),
+    ) -> DecisionCard:
+        try:
+            current = self._conversation.decisions[decision_id]
+        except KeyError as error:
+            raise WorkflowError(f"决策 {decision_id} 不存在") from error
+        if action not in {"confirm", "defer", "reject"}:
+            raise WorkflowError("未知的决策操作")
+        now = datetime.now(UTC)
+        if action == "defer" and current.status is DecisionStatus.CONFIRMED:
+            self._system_message(f"决策“{current.question}”暂不修改，继续沿用已确认事实。")
+            return current
+        history = current.history
+        revision = current.revision
+        if current.status in {DecisionStatus.CONFIRMED, DecisionStatus.REJECTED}:
+            history = (*history, DecisionRevision(
+                revision=current.revision,
+                status=current.status,
+                resolved_value=current.resolved_value,
+                selected_option_id=current.selected_option_id,
+                changed_at=now,
+            ))
+            revision += 1
+        if action == "confirm":
+            selected = next((item for item in current.options if item.id == option_id), None)
+            value = custom_value.strip() if custom_value.strip() else (
+                f"{selected.label}：{selected.description}" if selected else ""
+            )
+            if not value:
+                raise WorkflowError("请选择一个方案，或填写自定义方案")
+            status = DecisionStatus.CONFIRMED
+            label = f"已确认：{value}"
+        elif action == "defer":
+            status = DecisionStatus.DEFERRED
+            value = current.resolved_value
+            option_id = current.selected_option_id
+            label = "已暂缓，保留在待决策队列"
+        else:
+            status = DecisionStatus.REJECTED
+            value = custom_value.strip()
+            option_id = None
+            label = "已否决，不写入项目事实"
+        resolved = DecisionCard(
+            id=current.id,
+            episode_id=current.episode_id,
+            conversation_id=current.conversation_id,
+            source_message_id=current.source_message_id,
+            question=current.question,
+            context=current.context,
+            category=current.category,
+            scope=current.scope,
+            options=current.options,
+            status=status,
+            created_at=current.created_at,
+            resolved_at=now,
+            selected_option_id=option_id,
+            resolved_value=value,
+            revision=revision,
+            history=history,
+            affected_artifacts=affected_artifacts,
+        )
+        self._conversation.decisions[decision_id] = resolved
+        if not any(
+            card.status is DecisionStatus.PENDING
+            for card in self._conversation.decisions.values()
+        ):
+            self._conversation.status = ConversationStatus.COMPLETE
+        self._system_message(f"决策“{current.question}”{label}。")
+        return resolved
 
     def stop(self) -> None:
         if self._conversation.status is ConversationStatus.RUNNING:

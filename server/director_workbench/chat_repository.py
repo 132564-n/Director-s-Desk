@@ -16,6 +16,14 @@ from .chat import (
     Proposal,
     ProposalStatus,
 )
+from .decision_memory import (
+    DecisionCard,
+    DecisionOption,
+    DecisionRevision,
+    DecisionStatus,
+    FactCategory,
+    FactScope,
+)
 from .domain import Stage
 from .drafting import AgentRole
 
@@ -166,6 +174,47 @@ def _to_json(conversation: Conversation) -> str:
                 }
                 for proposal_id, proposal in conversation.proposals.items()
             },
+            "decisions": {
+                decision_id: {
+                    "id": card.id,
+                    "episode_id": card.episode_id,
+                    "conversation_id": card.conversation_id,
+                    "source_message_id": card.source_message_id,
+                    "question": card.question,
+                    "context": card.context,
+                    "category": card.category.value,
+                    "scope": card.scope.value,
+                    "options": [
+                        {
+                            "id": option.id,
+                            "label": option.label,
+                            "description": option.description,
+                            "impact": option.impact,
+                            "risk": option.risk,
+                            "recommended": option.recommended,
+                        }
+                        for option in card.options
+                    ],
+                    "status": card.status.value,
+                    "created_at": card.created_at.isoformat(),
+                    "resolved_at": card.resolved_at.isoformat() if card.resolved_at else None,
+                    "selected_option_id": card.selected_option_id,
+                    "resolved_value": card.resolved_value,
+                    "revision": card.revision,
+                    "history": [
+                        {
+                            "revision": item.revision,
+                            "status": item.status.value,
+                            "resolved_value": item.resolved_value,
+                            "selected_option_id": item.selected_option_id,
+                            "changed_at": item.changed_at.isoformat(),
+                        }
+                        for item in card.history
+                    ],
+                    "affected_artifacts": list(card.affected_artifacts),
+                }
+                for decision_id, card in conversation.decisions.items()
+            },
             "active_turn_id": conversation.active_turn_id,
             "max_rounds": conversation.max_rounds,
         },
@@ -233,6 +282,50 @@ def _from_json(document: str) -> Conversation:
                 created_at=datetime.fromisoformat(proposal["created_at"]),
             )
             for proposal_id, proposal in raw["proposals"].items()
+        },
+        decisions={
+            decision_id: DecisionCard(
+                id=card["id"],
+                episode_id=card["episode_id"],
+                conversation_id=card["conversation_id"],
+                source_message_id=card["source_message_id"],
+                question=card["question"],
+                context=card.get("context", ""),
+                category=FactCategory(card["category"]),
+                scope=FactScope(card["scope"]),
+                options=tuple(
+                    DecisionOption(
+                        id=option["id"],
+                        label=option["label"],
+                        description=option["description"],
+                        impact=option.get("impact", ""),
+                        risk=option.get("risk", ""),
+                        recommended=option.get("recommended", False),
+                    )
+                    for option in card["options"]
+                ),
+                status=DecisionStatus(card["status"]),
+                created_at=datetime.fromisoformat(card["created_at"]),
+                resolved_at=(
+                    datetime.fromisoformat(card["resolved_at"])
+                    if card.get("resolved_at") else None
+                ),
+                selected_option_id=card.get("selected_option_id"),
+                resolved_value=card.get("resolved_value", ""),
+                revision=card.get("revision", 1),
+                history=tuple(
+                    DecisionRevision(
+                        revision=item["revision"],
+                        status=DecisionStatus(item["status"]),
+                        resolved_value=item.get("resolved_value", ""),
+                        selected_option_id=item.get("selected_option_id"),
+                        changed_at=datetime.fromisoformat(item["changed_at"]),
+                    )
+                    for item in card.get("history", [])
+                ),
+                affected_artifacts=tuple(card.get("affected_artifacts", [])),
+            )
+            for decision_id, card in raw.get("decisions", {}).items()
         },
         active_turn_id=raw["active_turn_id"],
         max_rounds=raw.get("max_rounds", 6),

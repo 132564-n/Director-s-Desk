@@ -108,9 +108,16 @@ class WebCredentialsTests(unittest.TestCase):
         }).json()
         path = f"/conversations/{conversation['id']}"
         with patch("server.director_workbench.chat_engine.OpenAICompatibleAdapter") as adapter:
-            adapter.return_value.complete.return_value = ChatCompletion(
-                text="模型针对性意见", input_tokens=1, output_tokens=1, model="test-model",
-            )
+            def complete(**kwargs):
+                text = (
+                    '{"decisions":[]}'
+                    if "决策编辑" in kwargs["system_prompt"] else "模型针对性意见"
+                )
+                return ChatCompletion(
+                    text=text, input_tokens=1, output_tokens=1, model="test-model",
+                )
+
+            adapter.return_value.complete.side_effect = complete
             for content in ["历史约束：主角不能失忆", "请讨论故事开头"]:
                 self.client.post(f"{path}/messages", json={
                     "content": content, "mode": "discuss", "autonomous": True,
@@ -120,9 +127,13 @@ class WebCredentialsTests(unittest.TestCase):
             for call in adapter.call_args_list:
                 self.assertEqual(call.kwargs["api_key"], "test-only-not-a-real-key")
             calls = adapter.return_value.complete.call_args_list
-            chief = calls[-1].kwargs
+            chief = next(
+                call.kwargs for call in reversed(calls)
+                if "总导演" in call.kwargs["system_prompt"]
+            )
             self.assertIn("总导演", chief["system_prompt"])
             self.assertIn("模型针对性意见", chief["user_prompt"])
             self.assertIn("主角不能失忆", chief["user_prompt"])
             self.assertIn("保留悬念", chief["user_prompt"])
             self.assertGreaterEqual(len(calls), 10)
+            self.assertTrue(any(call.kwargs.get("json_mode") for call in calls))

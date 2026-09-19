@@ -45,6 +45,9 @@ stateDiagram-v2
 ```mermaid
 flowchart LR
     Series --> Episode
+    Episode --> DecisionCard
+    DecisionCard --> ConfirmedFact
+    ConfirmedFact --> AgentContext
     Episode --> Settings
     Episode --> Asset
     Episode --> OutlinePackage
@@ -65,3 +68,6 @@ flowchart LR
 5. 配置时长上限后，任何超时镜头都会阻止提交。
 6. 修改上游产物会将下游产物标记为失效。
 7. 每次批准都保留对应版本的不可变审批快照。
+8. 每轮最多生成三张用户决策卡，未经用户确认不得成为正式事实。
+9. 已确认、待确认和已否决内容必须分开保存。
+10. 修改已确认事实必须保留旧版本，并提示现有正式产物需要复核。

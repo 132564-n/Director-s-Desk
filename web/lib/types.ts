@@ -168,6 +168,57 @@ export type ProposalStatus =
   | "revision_requested"
   | "discarded";
 
+export type DecisionStatus = "pending" | "confirmed" | "deferred" | "rejected" | "needs_review";
+export type FactScope = "project" | "episode";
+export type FactCategory =
+  | "theme_audience"
+  | "world_rule"
+  | "character"
+  | "story_timeline"
+  | "scene_prop"
+  | "visual_asset"
+  | "shot_duration"
+  | "voice_music"
+  | "production_constraint"
+  | "open_question";
+
+export interface DecisionOption {
+  id: string;
+  label: string;
+  description: string;
+  impact: string;
+  risk: string;
+  recommended: boolean;
+}
+
+export interface DecisionRevision {
+  revision: number;
+  status: DecisionStatus;
+  resolved_value: string;
+  selected_option_id: string | null;
+  changed_at: string;
+}
+
+export interface DecisionCard {
+  id: string;
+  episode_id: string;
+  conversation_id: string;
+  source_message_id: string;
+  question: string;
+  context: string;
+  category: FactCategory;
+  scope: FactScope;
+  options: DecisionOption[];
+  status: DecisionStatus;
+  created_at: string;
+  resolved_at: string | null;
+  selected_option_id: string | null;
+  resolved_value: string;
+  revision: number;
+  history: DecisionRevision[];
+  affected_artifacts: StageKey[];
+}
+
 export interface ChatMessage {
   id: string;
   kind: MessageKind;
@@ -207,6 +258,7 @@ export interface Conversation {
   archived: boolean;
   messages: ChatMessage[];
   proposals: Record<string, Proposal>;
+  decisions: Record<string, DecisionCard>;
   active_turn_id: string | null;
   max_rounds: number;
 }
@@ -221,6 +273,7 @@ export interface ShelfArtifact {
 
 export interface EpisodeShelf {
   proposals: Proposal[];
+  decisions: DecisionCard[];
   artifacts: ShelfArtifact[];
   assets: Asset[];
 }

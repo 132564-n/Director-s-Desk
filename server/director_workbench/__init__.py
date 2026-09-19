@@ -14,6 +14,15 @@ from .chat import (
 from .chat_engine import GroupChatEngine, TurnOptions
 from .chat_repository import InMemoryConversationRepository, SqliteConversationRepository
 from .configured_drafting import ConfiguredDirectorTeam, artifact_from_payload
+from .decision_memory import (
+    DecisionCard,
+    DecisionCardDraft,
+    DecisionOption,
+    DecisionOptionDraft,
+    DecisionStatus,
+    FactCategory,
+    FactScope,
+)
 from .domain import (
     ApprovalRecord,
     Asset,
@@ -57,10 +66,17 @@ __all__ = [
     "Conversation",
     "ConversationModule",
     "ConversationStatus",
+    "DecisionCard",
+    "DecisionCardDraft",
+    "DecisionOption",
+    "DecisionOptionDraft",
+    "DecisionStatus",
     "DemoDirectorTeam",
     "DirectionPackage",
     "DraftResult",
     "Episode",
+    "FactCategory",
+    "FactScope",
     "GroupChatEngine",
     "InMemoryConversationRepository",
     "InMemoryWorkflowRepository",

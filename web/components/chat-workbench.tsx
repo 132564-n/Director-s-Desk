@@ -19,6 +19,7 @@ import {
   getEpisodeShelf,
   listConversations,
   listEpisodes,
+  resolveDecision,
   sendChatMessage,
   stopConversation,
   updateConversation,
@@ -28,6 +29,7 @@ import {
 import type {
   AgentRole,
   Conversation,
+  DecisionCard,
   EpisodeShelf,
   EpisodeSummary,
   Proposal,
@@ -79,6 +81,29 @@ const STATUS_LABEL = {
   complete: "本轮结束",
   failed: "运行失败",
   stopped: "已停止",
+} as const;
+
+const DECISION_STATUS_LABEL = {
+  pending: "待你决定",
+  confirmed: "已确认",
+  deferred: "已暂缓",
+  rejected: "已否决",
+  needs_review: "需要复核",
+} as const;
+
+const FACT_SCOPE_LABEL = { project: "项目级", episode: "单集级" } as const;
+
+const FACT_CATEGORY_LABEL = {
+  theme_audience: "主题与受众",
+  world_rule: "世界观规则",
+  character: "角色设定",
+  story_timeline: "剧情与时间线",
+  scene_prop: "场景与道具",
+  visual_asset: "美术与资产",
+  shot_duration: "分镜与时长",
+  voice_music: "配音与音乐",
+  production_constraint: "制作约束",
+  open_question: "待解决问题",
 } as const;
 
 const LAYOUT_KEY = "director.chat.layout.v1";
@@ -420,7 +445,7 @@ export function ChatWorkbench() {
               <span className={`run-ticket ${activeConversation.status}`} role="status"><i />{STATUS_LABEL[activeConversation.status]}</span>
             </div>
           ) : null}
-          <button className="icon-button shelf-trigger" onClick={() => setRightOpen((value) => !value)} aria-label={rightOpen ? "收起资产架" : "打开资产架"}>▤</button>
+          <button className="icon-button shelf-trigger" onClick={() => setRightOpen((value) => !value)} aria-label={rightOpen ? "收起决策与资产架" : "打开决策与资产架"}>▤</button>
         </header>
 
         {activeConversation ? (
@@ -445,7 +470,7 @@ export function ChatWorkbench() {
         )}
       </section>
 
-      <aside className="asset-drawer" aria-label="资产架">
+      <aside className="asset-drawer" aria-label="决策与资产架">
         <div
           className="resize-handle left-edge"
           role="separator"
@@ -459,13 +484,19 @@ export function ChatWorkbench() {
           onKeyDown={(event) => resizeWithKeyboard("right", event)}
         />
         <header className="shelf-header">
-          <div><p>PRODUCTION SHELF</p><h2>本集资产架</h2></div>
+          <div><p>DECISIONS & ASSETS</p><h2>决策与资产</h2></div>
           <button className="icon-button" onClick={() => setRightOpen(false)} aria-label="收起资产架">›</button>
         </header>
         <AssetShelf
           episodeId={activeEpisodeId}
           shelf={shelf}
           onChanged={() => loadShelf(activeEpisodeId)}
+          onDecisionChanged={async (conversationId) => {
+            await loadShelf(activeEpisodeId);
+            if (activeConversation?.id === conversationId) {
+              await refreshConversation(await getConversation(conversationId));
+            }
+          }}
           onError={setError}
         />
       </aside>
@@ -594,6 +625,15 @@ function ChatChannel({
 
   const proposalById = conversation.proposals;
   const messagesById = new Map(conversation.messages.map((item) => [item.id, item]));
+  const decisionsByMessage = useMemo(() => {
+    const grouped = new Map<string, DecisionCard[]>();
+    for (const card of Object.values(conversation.decisions ?? {})) {
+      const cards = grouped.get(card.source_message_id) ?? [];
+      cards.push(card);
+      grouped.set(card.source_message_id, cards);
+    }
+    return grouped;
+  }, [conversation.decisions]);
 
   return (
     <>
@@ -618,6 +658,7 @@ function ChatChannel({
           }
           const reply = item.reply_to ? messagesById.get(item.reply_to) : null;
           const proposal = item.proposal_id ? proposalById[item.proposal_id] : null;
+          const decisions = decisionsByMessage.get(item.id) ?? [];
           return (
             <article className={`chat-message ${item.kind}`} key={item.id}>
               <div className="message-avatar" data-role={item.sender_role ?? "你"}>
@@ -650,6 +691,26 @@ function ChatChannel({
                     }}
                   />
                 ) : null}
+                {decisions.map((card) => (
+                  <DecisionCardView
+                    key={card.id}
+                    card={card}
+                    busy={conversation.status === "running"}
+                    onResolve={async (action, optionId, customValue) => {
+                      try {
+                        const updated = await resolveDecision(conversation.id, card.id, {
+                          action,
+                          optionId,
+                          customValue,
+                        });
+                        await onConversation(updated);
+                        await onShelf();
+                      } catch (reason) {
+                        onError(reason instanceof Error ? reason.message : "决策保存失败");
+                      }
+                    }}
+                  />
+                ))}
               </div>
             </article>
           );
@@ -754,24 +815,180 @@ function ProposalCard({
   );
 }
 
+function DecisionCardView({
+  card,
+  busy,
+  compact = false,
+  onResolve,
+}: {
+  card: DecisionCard;
+  busy: boolean;
+  compact?: boolean;
+  onResolve: (
+    action: "confirm" | "defer" | "reject",
+    optionId?: string | null,
+    customValue?: string,
+  ) => Promise<void>;
+}) {
+  const [selected, setSelected] = useState(card.selected_option_id ?? "");
+  const [customValue, setCustomValue] = useState(
+    card.selected_option_id ? "" : card.resolved_value,
+  );
+  const [editing, setEditing] = useState(
+    card.status === "pending" || card.status === "deferred" || card.status === "needs_review",
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const act = async (
+    action: "confirm" | "defer" | "reject",
+    optionId?: string | null,
+    value?: string,
+  ) => {
+    setSubmitting(true);
+    try {
+      await onResolve(action, optionId, value);
+      setEditing(false);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <section className={`decision-card scope-${card.scope} ${compact ? "compact" : ""}`}>
+      <header>
+        <div><span>DECISION / {FACT_SCOPE_LABEL[card.scope]}</span><small>{FACT_CATEGORY_LABEL[card.category]} · REV.{card.revision}</small></div>
+        <i data-status={card.status}>{DECISION_STATUS_LABEL[card.status]}</i>
+      </header>
+      <h3>{card.question}</h3>
+      {card.context ? <p>{card.context}</p> : null}
+      {card.affected_artifacts?.length ? (
+        <div className="decision-impact-warning">修改了已确认事实，以下正式产物需要复核：{card.affected_artifacts.map((stage) => STAGE_LABELS[stage]).join("、")}</div>
+      ) : null}
+      {editing ? (
+        <fieldset disabled={busy || submitting}>
+          <legend>选择一个方案</legend>
+          <div className="decision-options">
+            {card.options.map((option, index) => (
+              <label className={selected === option.id ? "selected" : ""} key={option.id}>
+                <input
+                  type="radio"
+                  name={`decision-${card.id}`}
+                  checked={selected === option.id}
+                  onChange={() => { setSelected(option.id); setCustomValue(""); }}
+                />
+                <span>{String.fromCharCode(65 + index)}</span>
+                <div>
+                  <b>{option.label}{option.recommended ? <em>推荐</em> : null}</b>
+                  <p>{option.description}</p>
+                  {option.impact ? <small><strong>影响</strong>{option.impact}</small> : null}
+                  {option.risk ? <small className="risk"><strong>风险</strong>{option.risk}</small> : null}
+                </div>
+              </label>
+            ))}
+          </div>
+          <label className="custom-decision">
+            <span>自定义方案</span>
+            <textarea
+              rows={compact ? 2 : 3}
+              value={customValue}
+              placeholder="写下你的决定，系统会将它作为正式事实…"
+              onFocus={() => setSelected("custom")}
+              onChange={(event) => { setSelected("custom"); setCustomValue(event.target.value); }}
+            />
+          </label>
+          <footer>
+            <button
+              className="decision-confirm"
+              type="button"
+              disabled={!selected || (selected === "custom" && !customValue.trim())}
+              onClick={() => void act(
+                "confirm",
+                selected === "custom" ? null : selected,
+                selected === "custom" ? customValue : "",
+              )}
+            >{submitting ? "正在写入…" : "确认并写入事实库"}</button>
+            <button type="button" onClick={() => void act("defer")}>暂不决定</button>
+            <button className="decision-reject" type="button" onClick={() => void act("reject")}>全部否决</button>
+          </footer>
+        </fieldset>
+      ) : (
+        <div className="decision-resolution">
+          <span>{card.status === "confirmed" ? "已写入项目事实" : "当前处理结果"}</span>
+          <b>{card.resolved_value || DECISION_STATUS_LABEL[card.status]}</b>
+          <button type="button" onClick={() => setEditing(true)}>重新决定</button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function AssetShelf({
   episodeId,
   shelf,
   onChanged,
+  onDecisionChanged,
   onError,
 }: {
   episodeId: string;
   shelf: EpisodeShelf | null;
   onChanged: () => Promise<void>;
+  onDecisionChanged: (conversationId: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [uploading, setUploading] = useState(false);
   const pending = shelf?.proposals.filter((item) => item.status !== "confirmed") ?? [];
+  const decisions = shelf?.decisions ?? [];
+  const pendingDecisions = decisions.filter((item) => ["pending", "deferred", "needs_review"].includes(item.status));
+  const confirmedDecisions = decisions.filter((item) => item.status === "confirmed");
+  const rejectedDecisions = decisions.filter((item) => item.status === "rejected");
   const confirmed = shelf?.artifacts ?? [];
   const assets = shelf?.assets ?? [];
 
   return (
     <div className="shelf-scroll">
+      <section className="shelf-group decision-inbox">
+        <header><span>待我决定</span><b>{String(pendingDecisions.length).padStart(2, "0")}</b></header>
+        {pendingDecisions.map((card) => (
+          <DecisionCardView
+            key={card.id}
+            card={card}
+            busy={false}
+            compact
+            onResolve={async (action, optionId, customValue) => {
+              await resolveDecision(card.conversation_id, card.id, { action, optionId, customValue });
+              await onDecisionChanged(card.conversation_id);
+            }}
+          />
+        ))}
+        {!pendingDecisions.length ? <p className="shelf-empty">总导演提出的关键分岔会集中在这里</p> : null}
+      </section>
+
+      <section className="shelf-group confirmed-memory">
+        <header><span>已确认事实</span><b>{String(confirmedDecisions.length).padStart(2, "0")}</b></header>
+        {confirmedDecisions.slice(0, 8).map((card) => (
+          <article className="memory-ticket" key={card.id}>
+            <span>{FACT_SCOPE_LABEL[card.scope]}</span>
+            <b>{card.question}</b>
+            <p>{card.resolved_value}</p>
+            <small>{FACT_CATEGORY_LABEL[card.category]} · REV.{card.revision}</small>
+          </article>
+        ))}
+        {!confirmedDecisions.length ? <p className="shelf-empty">你确认的决定会成为后续 Agent 的硬约束</p> : null}
+      </section>
+
+      {rejectedDecisions.length ? (
+        <details className="shelf-group rejected-memory">
+          <summary><span>已否决方案</span><b>{String(rejectedDecisions.length).padStart(2, "0")}</b></summary>
+          {rejectedDecisions.map((card) => (
+            <article className="memory-ticket rejected" key={card.id}>
+              <b>{card.question}</b>
+              <p>{card.options.map((option) => option.label).join(" / ")}</p>
+              <small>后续 Agent 不应再次作为默认方案提出</small>
+            </article>
+          ))}
+        </details>
+      ) : null}
+
       <section className="shelf-group">
         <header><span>待办提案</span><b>{String(pending.length).padStart(2, "0")}</b></header>
         {pending.map((proposal) => (

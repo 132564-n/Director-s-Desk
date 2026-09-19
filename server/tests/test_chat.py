@@ -21,6 +21,14 @@ from server.director_workbench.chat_repository import (
     InMemoryConversationRepository,
     SqliteConversationRepository,
 )
+from server.director_workbench.decision_memory import (
+    DecisionCardDraft,
+    DecisionOptionDraft,
+    DecisionStatus,
+    FactCategory,
+    FactScope,
+    parse_decision_drafts,
+)
 from server.director_workbench.domain import Episode, ProjectSettings, Stage
 from server.director_workbench.drafting import AgentRole
 from server.director_workbench.model_settings import LocalModelSettingsStore
@@ -84,6 +92,52 @@ class ConversationModuleTests(unittest.TestCase):
         snapshot = module.snapshot()
         self.assertEqual(snapshot.status, ConversationStatus.STOPPED)
         self.assertIsNone(snapshot.active_turn_id)
+
+    def test_decision_cards_wait_for_user_and_keep_revision_history(self) -> None:
+        module = ConversationModule(make_conversation())
+        draft = DecisionCardDraft(
+            question="结尾停在哪里？",
+            context="两个方向都成立，需要创作者选择。",
+            category=FactCategory.STORY_TIMELINE,
+            scope=FactScope.EPISODE,
+            options=(
+                DecisionOptionDraft("灯重新点亮", "主题闭环", recommended=True),
+                DecisionOptionDraft("破晓钟响", "收束感更强", risk="扩大时间跨度"),
+            ),
+        )
+        module.complete_turn(decision="请用户拍板。", model="test", decision_drafts=(draft,))
+        waiting = module.snapshot()
+        card = next(iter(waiting.decisions.values()))
+        self.assertEqual(waiting.status, ConversationStatus.WAITING)
+        self.assertEqual(card.status, DecisionStatus.PENDING)
+
+        module.begin_turn(content="先补充一条信息", mode=ChatMode.DISCUSS, autonomous=False)
+        module.complete_turn(decision="补充已记录。", model="test")
+        self.assertEqual(module.snapshot().status, ConversationStatus.WAITING)
+
+        module.resolve_decision(card.id, action="confirm", option_id=card.options[0].id)
+        confirmed = module.snapshot().decisions[card.id]
+        self.assertEqual(confirmed.status, DecisionStatus.CONFIRMED)
+        self.assertIn("灯重新点亮", confirmed.resolved_value)
+        self.assertEqual(module.snapshot().status, ConversationStatus.COMPLETE)
+
+        module.resolve_decision(card.id, action="confirm", custom_value="停在灯火传到城门")
+        revised = module.snapshot().decisions[card.id]
+        self.assertEqual(revised.revision, 2)
+        self.assertEqual(len(revised.history), 1)
+        self.assertEqual(revised.resolved_value, "停在灯火传到城门")
+
+    def test_decision_json_parser_limits_and_normalizes_cards(self) -> None:
+        drafts = parse_decision_drafts(
+            '{"decisions":[{"question":"选择主题？","context":"存在分歧",'
+            '"scope":"project","category":"theme_audience","options":['
+            '{"label":"传递","description":"温暖方向","recommended":true},'
+            '{"label":"复仇","description":"强冲突方向","risk":"偏离受众"}]}]}'
+        )
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0].scope, FactScope.PROJECT)
+        self.assertEqual(drafts[0].category, FactCategory.THEME_AUDIENCE)
+        self.assertTrue(drafts[0].options[0].recommended)
 
 
 class ConversationRepositoryTests(unittest.TestCase):
@@ -249,6 +303,39 @@ class ChatApiTests(unittest.TestCase):
         self.assertEqual(response.json()["title"], "锁定版创作会")
         self.assertTrue(response.json()["pinned"])
         self.assertTrue(response.json()["archived"])
+
+    def test_decision_is_available_in_shelf_and_can_be_resolved(self) -> None:
+        created = self._create_conversation()
+        conversation = self.conversations.get(created["id"])
+        module = ConversationModule(conversation)
+        module.complete_turn(
+            decision="需要用户选择主题。",
+            model="test",
+            decision_drafts=(DecisionCardDraft(
+                question="采用哪个主题？",
+                context="两种方向影响后续大纲。",
+                category=FactCategory.THEME_AUDIENCE,
+                scope=FactScope.PROJECT,
+                options=(
+                    DecisionOptionDraft("传递", "以善意传递为主题", recommended=True),
+                    DecisionOptionDraft("复仇", "以复仇为主题"),
+                ),
+            ),),
+        )
+        self.conversations.save(module.snapshot())
+        card = next(iter(module.snapshot().decisions.values()))
+
+        shelf = self.client.get("/episodes/episode-1/shelf").json()
+        self.assertEqual(shelf["decisions"][0]["id"], card.id)
+        resolved = self.client.post(
+            f"/conversations/{conversation.id}/decisions/{card.id}/resolve",
+            json={"action": "confirm", "option_id": card.options[0].id},
+        )
+        self.assertEqual(resolved.status_code, 200, resolved.text)
+        self.assertEqual(
+            resolved.json()["decisions"][card.id]["status"], "confirmed",
+        )
+        self.assertEqual(resolved.json()["status"], "complete")
 
 
 if __name__ == "__main__":
