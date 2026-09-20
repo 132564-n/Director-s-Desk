@@ -8,10 +8,10 @@ const browser = await chromium.launch({
 
 const now = new Date().toISOString();
 const longMessage = [
-  "结论：开场应先给出失控的送信动作，再揭示主角身份。",
-  "依据：动作钩子比世界观说明更快，前三秒已有明确危险和目标。",
-  "风险或异议：如果立刻解释旧城规则，节奏会被说明文字拖慢。",
-  "建议动作：保留一处视觉线索，把规则解释推迟到第二场。",
+  "**结论**：开场应先给出失控的送信动作，再揭示主角身份。",
+  "**依据**：动作钩子比世界观说明更快，前三秒已有明确危险和目标。",
+  "**风险或异议**：如果立刻解释旧城规则，节奏会被说明文字拖慢。",
+  "**建议动作**：保留一处视觉线索，把规则解释推迟到第二场。",
   "详细说明：镜头从被雨打湿的信封开始，跟随手部进入奔跑动作；转角后只让观众看到追兵投影，不展示全貌。第二场再借守门人的阻拦补充规则。这样既能建立悬念，也能让角色通过行动完成信息交代。为了验证折叠区域，这里保留足够长的制作补充，包括机位、节奏、信息顺序和连续性提醒，但默认不占据会议主视图。",
 ].join("\n");
 
@@ -38,6 +38,7 @@ const conversation = {
     { id: "message-system", kind: "system", content: "会话已建立。", created_at: now, sender_name: "系统", sender_role: null, model: "", round: 0, reply_to: null, attachment_ids: [], proposal_id: null, discarded: false },
     { id: "message-user", kind: "user", content: "讨论开场钩子", created_at: now, sender_name: "你", sender_role: null, model: "autonomous", round: 0, reply_to: null, attachment_ids: [], proposal_id: null, discarded: false },
     { id: "message-agent", kind: "agent", content: longMessage, created_at: now, sender_name: "编剧", sender_role: "编剧", model: "deepseek-flash", round: 2, reply_to: "message-user", attachment_ids: [], proposal_id: null, discarded: false },
+    { id: "message-empty", kind: "agent", content: "", created_at: now, sender_name: "策划", sender_role: "策划", model: "deepseek-flash", round: 2, reply_to: "message-user", attachment_ids: [], proposal_id: null, discarded: false },
   ],
 };
 
@@ -69,6 +70,8 @@ try {
 
   await page.goto("http://127.0.0.1:3000", { waitUntil: "domcontentloaded" });
   await page.locator(".message-copy details").waitFor();
+  assert.equal(await page.locator(".message-paper strong").count(), 4);
+  assert.equal(await page.locator(".message-empty").count(), 1);
   assert.match(await page.locator(".run-ticket").innerText(), /R2\/4/);
   assert.match(await page.locator(".agent-typing").innerText(), /人物动机仍需编剧与审校确认/);
   assert.match(await page.locator(".agent-typing").innerText(), /5 次模型调用/);
@@ -77,6 +80,17 @@ try {
   await detail.locator("summary").click();
   assert.ok(await detail.getAttribute("open") !== null);
   assert.match(await detail.innerText(), /镜头从被雨打湿的信封开始/);
+
+  conversation.status = "complete";
+  conversation.active_turn_id = null;
+  conversation.discussion_note = "";
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const composerInput = page.getByLabel("给导演组发送消息");
+  const sendButton = page.locator(".send-button");
+  await composerInput.fill("@编剧 @分镜导演 ，！");
+  assert.equal(await sendButton.isDisabled(), true);
+  await composerInput.fill("@编剧 请给出开场冲突方案");
+  assert.equal(await sendButton.isEnabled(), true);
 
   await page.setViewportSize({ width: 390, height: 667 });
   const layout = await page.evaluate(() => {
@@ -90,7 +104,7 @@ try {
   assert.equal(layout.overflow, false);
   assert.ok(layout.composerBottom <= layout.viewportHeight + 1);
   assert.deepEqual(errors, []);
-  console.log("PASS: adaptive round status, call progress, long-message expansion, mobile composer; endpoints mocked, user data unchanged.");
+  console.log("PASS: adaptive round status, call progress, long-message expansion, mention-only guard, mobile composer; endpoints mocked, user data unchanged.");
 } finally {
   await browser.close();
 }

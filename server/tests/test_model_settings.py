@@ -125,3 +125,63 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
 
         self.assertEqual(result.text, '{"title":"草案"}')
         self.assertEqual(result.input_tokens, 12)
+
+    def test_empty_completion_is_retried_before_success(self) -> None:
+        contents = iter(["", "   ", "恢复正常"])
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json={
+                "model": "director-model",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": next(contents)},
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+            })
+
+        adapter = OpenAICompatibleAdapter(
+            base_url="https://models.example/v1",
+            api_key="local-secret",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        result = adapter.complete(
+            model="director-model",
+            system_prompt="你是总导演",
+            user_prompt="给出结论",
+        )
+
+        self.assertEqual(result.text, "恢复正常")
+        self.assertEqual(calls, 3)
+
+    def test_repeated_empty_completion_raises_clear_error(self) -> None:
+        calls = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(200, json={
+                "model": "director-model",
+                "choices": [{
+                    "finish_reason": "length",
+                    "message": {"content": "", "reasoning_content": "内部推理"},
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 128},
+            })
+
+        adapter = OpenAICompatibleAdapter(
+            base_url="https://models.example/v1",
+            api_key="local-secret",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "连续 3 次返回空内容"):
+            adapter.complete(
+                model="director-model",
+                system_prompt="你是总导演",
+                user_prompt="给出结论",
+            )
+        self.assertEqual(calls, 3)

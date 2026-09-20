@@ -122,9 +122,20 @@ function dateLabel(value: string) {
   }).format(new Date(value));
 }
 
+function BoldText({ text }: { text: string }) {
+  return <>{text.split(/(\*\*[^*\n]+\*\*)/g).map((part, index) => (
+    part.startsWith("**") && part.endsWith("**")
+      ? <strong key={index}>{part.slice(2, -2)}</strong>
+      : part
+  ))}</>;
+}
+
 function MessageContent({ content, collapsible }: { content: string; collapsible: boolean }) {
+  if (!content.trim()) {
+    return <p className="message-empty">本次模型未返回内容（历史记录）</p>;
+  }
   const detailMarker = content.search(/\n详细说明[：:]?/);
-  if (!collapsible || (detailMarker < 0 && content.length <= 360)) return <p>{content}</p>;
+  if (!collapsible || (detailMarker < 0 && content.length <= 360)) return <p><BoldText text={content} /></p>;
   let splitAt = detailMarker >= 0 ? detailMarker : -1;
   if (splitAt < 0) {
     const candidate = content.slice(190, 340).search(/[。！？\n]/);
@@ -132,16 +143,39 @@ function MessageContent({ content, collapsible }: { content: string; collapsible
   }
   const brief = content.slice(0, splitAt).trim();
   const detail = content.slice(splitAt).replace(/^\s*详细说明[：:]?\s*/, "").trim();
-  if (!detail) return <p>{content}</p>;
+  if (!detail) return <p><BoldText text={content} /></p>;
   return (
     <div className="message-copy">
-      <p>{brief}</p>
+      <p><BoldText text={brief} /></p>
       <details>
         <summary>展开完整发言</summary>
-        <p>{detail}</p>
+        <p><BoldText text={detail} /></p>
       </details>
     </div>
   );
+}
+
+function prepareOutgoingMessage(raw: string, initialMode: "discuss" | "proposal") {
+  let content = raw.trim();
+  let mode = initialMode;
+  if (content.startsWith("/讨论")) {
+    mode = "discuss";
+    content = content.replace(/^\/讨论\s*/, "");
+  } else if (content.startsWith("/生成草案")) {
+    mode = "proposal";
+    content = content.replace(/^\/生成草案\s*/, "");
+  } else if (content.startsWith("/审校")) {
+    content = `@连续性审校 ${content.replace(/^\/审校\s*/, "")}`;
+  } else if (content.startsWith("/总结")) {
+    content = `请总结本轮共识和少数意见。${content.replace(/^\/总结\s*/, "")}`;
+  }
+  return { content: content.trim(), mode };
+}
+
+function hasConcreteTask(content: string) {
+  let remainder = content;
+  for (const role of ROLES) remainder = remainder.replaceAll(`@${role}`, "");
+  return remainder.replace(/[\s\p{P}\p{S}]/gu, "").length > 0;
 }
 
 function proposalSummary(proposal: Proposal) {
@@ -613,20 +647,10 @@ function ChatChannel({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    let content = message.trim();
-    if (!content || conversation.status === "running") return;
-    let sendMode = mode;
-    if (content.startsWith("/讨论")) {
-      sendMode = "discuss";
-      content = content.replace(/^\/讨论\s*/, "");
-    } else if (content.startsWith("/生成草案")) {
-      sendMode = "proposal";
-      content = content.replace(/^\/生成草案\s*/, "");
-    } else if (content.startsWith("/审校")) {
-      content = `@连续性审校 ${content.replace(/^\/审校\s*/, "")}`;
-    } else if (content.startsWith("/总结")) {
-      content = `请总结本轮共识和少数意见。${content.replace(/^\/总结\s*/, "")}`;
-    }
+    const prepared = prepareOutgoingMessage(message, mode);
+    const content = prepared.content;
+    const sendMode = prepared.mode;
+    if (!hasConcreteTask(content) || conversation.status === "running") return;
     const mentions = conversation.members.filter((role) => content.includes(`@${role}`));
     setAwayFromLatest(false);
     setSending(true);
@@ -799,7 +823,7 @@ function ChatChannel({
             disabled={conversation.status === "running"}
             rows={3}
           />
-          <button className="send-button" disabled={!message.trim() || sending || conversation.status === "running"}>
+          <button className="send-button" disabled={!hasConcreteTask(prepareOutgoingMessage(message, mode).content) || sending || conversation.status === "running"}>
             <span>{sending ? "发送中" : mode === "proposal" ? "交付任务" : "发送"}</span><i>↗</i>
           </button>
         </div>

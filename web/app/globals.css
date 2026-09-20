@@ -459,6 +459,7 @@ button[data-status="changes_requested"] .frame-status, button[data-status="stale
 .chat-message.director_decision .message-paper { border: 1px solid #9c8558; border-left: 4px solid var(--brass); background: #f2ead8; }
 .chat-message.director_decision .message-paper::before { content: "总导演结论"; display: block; margin-bottom: 8px; color: #8c6d34; font: 8px var(--utility); letter-spacing: .12em; }
 .message-paper p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; line-height: 1.72; }
+.message-paper .message-empty { color: #8a8172; font-style: italic; }
 .message-copy details { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(25,37,48,.2); }
 .message-copy summary { width: max-content; color: var(--cyan-dark); cursor: pointer; font-size: 9px; font-weight: 800; letter-spacing: .04em; }
 .message-copy details p { margin-top: 9px; color: #4d595a; }

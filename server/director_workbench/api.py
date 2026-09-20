@@ -320,6 +320,8 @@ def create_app(
             code = error.response.status_code
             hint = "请检查密钥或访问权限" if code in {401, 403} else "请检查接口地址、模型名或供应商额度"
             raise HTTPException(502, f"供应商返回 HTTP {code}，{hint}") from None
+        except RuntimeError as error:
+            raise HTTPException(502, str(error)) from None
         except (httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
             raise HTTPException(502, "连接失败或响应格式不兼容，请检查网络与接口配置") from None
 

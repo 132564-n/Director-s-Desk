@@ -66,17 +66,27 @@ class OpenAICompatibleAdapter:
             body["max_tokens"] = max_tokens
         context = nullcontext(self._client) if self._client is not None else httpx.Client(timeout=90)
         with context as client:
-            response = client.post(
-                f"{self._base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                json=body,
-            )
-        response.raise_for_status()
-        payload = response.json()
-        usage = payload.get("usage", {})
-        return ChatCompletion(
-            text=payload["choices"][0]["message"]["content"],
-            input_tokens=int(usage.get("prompt_tokens", 0)),
-            output_tokens=int(usage.get("completion_tokens", 0)),
-            model=payload.get("model", model),
+            last_finish_reason = "unknown"
+            for _attempt in range(3):
+                response = client.post(
+                    f"{self._base_url}/chat/completions",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json=body,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                choice = payload["choices"][0]
+                last_finish_reason = str(choice.get("finish_reason", "unknown"))
+                content = choice["message"].get("content")
+                if isinstance(content, str) and content.strip():
+                    usage = payload.get("usage", {})
+                    return ChatCompletion(
+                        text=content,
+                        input_tokens=int(usage.get("prompt_tokens", 0)),
+                        output_tokens=int(usage.get("completion_tokens", 0)),
+                        model=payload.get("model", model),
+                    )
+        raise RuntimeError(
+            "模型连续 3 次返回空内容，请稍后重试或更换模型"
+            f"（finish_reason={last_finish_reason}）"
         )

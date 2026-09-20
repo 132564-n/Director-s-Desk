@@ -53,6 +53,34 @@ def make_conversation():
 
 
 class ConversationModuleTests(unittest.TestCase):
+    def test_mentions_without_a_task_are_rejected(self) -> None:
+        module = ConversationModule(make_conversation())
+
+        with self.assertRaisesRegex(Exception, "补充具体任务"):
+            module.begin_turn(
+                content="@编剧  @分镜导演  @连续性审校",
+                mode=ChatMode.DISCUSS,
+                autonomous=True,
+                mentions=(
+                    AgentRole.WRITER,
+                    AgentRole.STORYBOARD_DIRECTOR,
+                    AgentRole.CONTINUITY_EDITOR,
+                ),
+            )
+
+    def test_empty_agent_and_director_messages_are_rejected(self) -> None:
+        module = ConversationModule(make_conversation())
+
+        with self.assertRaisesRegex(Exception, "空内容"):
+            module.add_agent_message(
+                role=AgentRole.WRITER,
+                content="   ",
+                model="test",
+                round_number=1,
+            )
+        with self.assertRaisesRegex(Exception, "空内容"):
+            module.complete_turn(decision="", model="test")
+
     def test_turn_and_proposal_transitions_are_auditable(self) -> None:
         module = ConversationModule(make_conversation())
         user_message = module.begin_turn(

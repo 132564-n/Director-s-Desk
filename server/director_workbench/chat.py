@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -117,6 +118,11 @@ class ConversationModule:
             raise WorkflowError("当前会话仍在讨论中，请先停止或等待本轮结束")
         if not content.strip():
             raise WorkflowError("消息内容不能为空")
+        without_mentions = content
+        for role in AgentRole:
+            without_mentions = without_mentions.replace(f"@{role.value}", "")
+        if not re.sub(r"[\W_]+", "", without_mentions, flags=re.UNICODE):
+            raise WorkflowError("请在 @角色 后补充具体任务")
         now = datetime.now(UTC)
         metadata = []
         if mode is ChatMode.PROPOSAL:
@@ -172,6 +178,8 @@ class ConversationModule:
         round_number: int,
         reply_to: str | None = None,
     ) -> ChatMessage:
+        if not content.strip():
+            raise WorkflowError("Agent 返回了空内容，本次发言未保存")
         message = ChatMessage(
             id=f"message-{uuid4().hex}",
             kind=MessageKind.AGENT,
@@ -198,6 +206,8 @@ class ConversationModule:
         decision_drafts: tuple[DecisionCardDraft, ...] = (),
         final_round: int = 1,
     ) -> ChatMessage:
+        if not decision.strip():
+            raise WorkflowError("总导演返回了空内容，本轮不能标记为完成")
         proposal_id = None
         decision_id = f"message-{uuid4().hex}"
         now = datetime.now(UTC)
