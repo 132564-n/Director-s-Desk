@@ -61,6 +61,15 @@ class ConversationModuleTests(unittest.TestCase):
             autonomous=True,
             mentions=(AgentRole.WRITER,),
         )
+        started = module.snapshot()
+        self.assertEqual(started.max_rounds, 4)
+        self.assertEqual(started.current_round, 0)
+        self.assertIn("分配", started.discussion_note)
+        module.update_discussion_progress(
+            round_number=1,
+            note="编剧与审校正在交换意见",
+            calls_increment=2,
+        )
         module.add_agent_message(
             role=AgentRole.WRITER,
             content="从误会切入。",
@@ -74,6 +83,7 @@ class ConversationModuleTests(unittest.TestCase):
             proposal_stage=Stage.OUTLINE,
             proposal_title="开场大纲",
             proposal_payload={"title": "开场", "logline": "误会", "beats": ["冲突"]},
+            final_round=1,
         )
         proposal_id = decision.proposal_id
         assert proposal_id is not None
@@ -84,6 +94,8 @@ class ConversationModuleTests(unittest.TestCase):
         self.assertEqual(snapshot.proposals[proposal_id].status, ProposalStatus.ADOPTED)
         self.assertEqual(snapshot.messages[-1].kind, MessageKind.SYSTEM)
         self.assertIn("已采纳为草案", snapshot.messages[-1].content)
+        self.assertEqual(snapshot.calls_made, 2)
+        self.assertIn("收束", snapshot.discussion_note)
 
     def test_running_turn_can_be_stopped(self) -> None:
         module = ConversationModule(make_conversation())
@@ -210,6 +222,20 @@ class GroupChatEngineTests(unittest.TestCase):
             )
             self.assertEqual(result.messages[-1].kind, MessageKind.DIRECTOR_DECISION)
             self.assertEqual(result.status, ConversationStatus.COMPLETE)
+            self.assertEqual(result.current_round, 2)
+            self.assertEqual(result.max_rounds, 4)
+            self.assertEqual(result.calls_made, 0)
+
+    def test_round_review_keeps_only_available_roles(self) -> None:
+        review = GroupChatEngine._parse_discussion_review(
+            '{"continue":true,"unresolved_roles":["编剧","不存在的角色"],'
+            '"unresolved_points":["动机不成立"],"reason":"仍需修正人物动机"}',
+            (AgentRole.WRITER, AgentRole.CONTINUITY_EDITOR),
+        )
+
+        self.assertTrue(review.continue_discussion)
+        self.assertEqual(review.unresolved_roles, (AgentRole.WRITER,))
+        self.assertEqual(review.unresolved_points, ("动机不成立",))
 
 
 class ChatApiTests(unittest.TestCase):

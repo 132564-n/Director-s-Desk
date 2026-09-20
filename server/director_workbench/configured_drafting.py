@@ -18,7 +18,14 @@ from .domain import (
 )
 from .drafting import STAGE_TEAMS, AgentRole, DiscussionMessage, DraftResult
 from .model_gateway import CompletionGateway, OpenAICompatibleAdapter
-from .model_settings import ModelSettings, ProviderKind, ProviderSettings
+from .model_settings import (
+    ModelSettings,
+    ProviderKind,
+    ProviderSettings,
+    effective_profile,
+    profile_instruction,
+    profile_temperature,
+)
 from .workflow import WorkflowError
 
 
@@ -93,9 +100,12 @@ class ConfiguredDirectorTeam:
             model=assignment.model,
             system_prompt=(
                 f"你是中文 AI 漫剧制作团队的{role.value}。"
+                f"{profile_instruction(effective_profile(assignment))}"
                 "只讨论自己专业范围内的关键问题，给出具体可执行建议，不写空话。"
             ),
             user_prompt=f"当前阶段：{stage.value}\n项目材料：\n{context}",
+            temperature=profile_temperature(effective_profile(assignment)),
+            max_tokens=900,
         )
         return _AgentOutput(role, completion.text.strip())
 
@@ -117,6 +127,7 @@ class ConfiguredDirectorTeam:
             model=assignment.model,
             system_prompt=(
                 "你是总导演。综合专业意见形成唯一版本。"
+                f"{profile_instruction(effective_profile(assignment))}"
                 "必须只返回符合用户给定结构的 JSON，不要使用 Markdown 代码块。"
             ),
             user_prompt=(
@@ -124,6 +135,7 @@ class ConfiguredDirectorTeam:
                 f"输出要求：\n{self._schema(stage, episode)}"
             ),
             json_mode=True,
+            temperature=profile_temperature(effective_profile(assignment)),
         )
         try:
             payload = json.loads(_strip_code_fence(completion.text))

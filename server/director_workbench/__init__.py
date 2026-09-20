@@ -44,6 +44,7 @@ from .exporting import build_episode_package
 from .model_gateway import ChatCompletion, OpenAICompatibleAdapter
 from .model_settings import (
     AgentModelSettings,
+    AgentWorkProfile,
     LocalModelSettingsStore,
     ModelSettings,
     ProviderKind,
@@ -55,6 +56,7 @@ from .workflow import ProductionWorkflow, WorkflowError, WorkflowView
 __all__ = [
     "AgentModelSettings",
     "AgentRole",
+    "AgentWorkProfile",
     "ApprovalRecord",
     "Asset",
     "AssetKind",

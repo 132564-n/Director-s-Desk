@@ -91,7 +91,10 @@ class Conversation:
     proposals: dict[str, Proposal] = field(default_factory=dict)
     decisions: dict[str, DecisionCard] = field(default_factory=dict)
     active_turn_id: str | None = None
-    max_rounds: int = 6
+    current_round: int = 0
+    max_rounds: int = 4
+    discussion_note: str = ""
+    calls_made: int = 0
 
 
 class ConversationModule:
@@ -135,8 +138,30 @@ class ConversationModule:
         self._conversation.messages.append(message)
         self._conversation.status = ConversationStatus.RUNNING
         self._conversation.active_turn_id = message.id
+        self._conversation.current_round = 0
+        self._conversation.max_rounds = 4
+        self._conversation.discussion_note = "正在分配专业席位"
+        self._conversation.calls_made = 0
         self._conversation.updated_at = now
         return message
+
+    def update_discussion_progress(
+        self,
+        *,
+        round_number: int | None = None,
+        note: str | None = None,
+        calls_increment: int = 0,
+    ) -> None:
+        if round_number is not None:
+            self._conversation.current_round = max(0, min(
+                round_number, self._conversation.max_rounds,
+            ))
+        if note is not None:
+            self._conversation.discussion_note = note.strip()
+        self._conversation.calls_made = max(
+            0, self._conversation.calls_made + calls_increment,
+        )
+        self._conversation.updated_at = datetime.now(UTC)
 
     def add_agent_message(
         self,
@@ -171,6 +196,7 @@ class ConversationModule:
         proposal_title: str = "",
         proposal_payload: dict | None = None,
         decision_drafts: tuple[DecisionCardDraft, ...] = (),
+        final_round: int = 1,
     ) -> ChatMessage:
         proposal_id = None
         decision_id = f"message-{uuid4().hex}"
@@ -194,7 +220,7 @@ class ConversationModule:
             sender_name=AgentRole.CHIEF_DIRECTOR.value,
             sender_role=AgentRole.CHIEF_DIRECTOR,
             model=model,
-            round=2,
+            round=final_round,
             proposal_id=proposal_id,
         )
         self._conversation.messages.append(message)
@@ -215,6 +241,8 @@ class ConversationModule:
             else ConversationStatus.COMPLETE
         )
         self._conversation.active_turn_id = None
+        self._conversation.current_round = min(final_round, self._conversation.max_rounds)
+        self._conversation.discussion_note = "总导演已收束本轮讨论"
         self._conversation.updated_at = now
         return message
 

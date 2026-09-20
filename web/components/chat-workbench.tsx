@@ -122,6 +122,28 @@ function dateLabel(value: string) {
   }).format(new Date(value));
 }
 
+function MessageContent({ content, collapsible }: { content: string; collapsible: boolean }) {
+  const detailMarker = content.search(/\n详细说明[：:]?/);
+  if (!collapsible || (detailMarker < 0 && content.length <= 360)) return <p>{content}</p>;
+  let splitAt = detailMarker >= 0 ? detailMarker : -1;
+  if (splitAt < 0) {
+    const candidate = content.slice(190, 340).search(/[。！？\n]/);
+    splitAt = candidate >= 0 ? 190 + candidate + 1 : 300;
+  }
+  const brief = content.slice(0, splitAt).trim();
+  const detail = content.slice(splitAt).replace(/^\s*详细说明[：:]?\s*/, "").trim();
+  if (!detail) return <p>{content}</p>;
+  return (
+    <div className="message-copy">
+      <p>{brief}</p>
+      <details>
+        <summary>展开完整发言</summary>
+        <p>{detail}</p>
+      </details>
+    </div>
+  );
+}
+
 function proposalSummary(proposal: Proposal) {
   if (proposal.stage === "outline" && "logline" in proposal.payload) {
     return proposal.payload.logline;
@@ -442,7 +464,10 @@ export function ChatWorkbench() {
                 ))}
                 {activeConversation.members.length > 6 ? <i>+{activeConversation.members.length - 6}</i> : null}
               </div>
-              <span className={`run-ticket ${activeConversation.status}`} role="status"><i />{STATUS_LABEL[activeConversation.status]}</span>
+              <span className={`run-ticket ${activeConversation.status}`} role="status">
+                <i />{STATUS_LABEL[activeConversation.status]}
+                {activeConversation.status === "running" && activeConversation.current_round ? ` · R${activeConversation.current_round}/${activeConversation.max_rounds}` : ""}
+              </span>
             </div>
           ) : null}
           <button className="icon-button shelf-trigger" onClick={() => setRightOpen((value) => !value)} aria-label={rightOpen ? "收起决策与资产架" : "打开决策与资产架"}>▤</button>
@@ -673,7 +698,10 @@ function ChatChannel({
                 </header>
                 <div className="message-paper">
                   {reply ? <div className="reply-chip">回复 {reply.sender_name} · {reply.content.slice(0, 36)}</div> : null}
-                  <p>{item.content}</p>
+                  <MessageContent
+                    content={item.content}
+                    collapsible={item.kind === "agent" || item.kind === "director_decision"}
+                  />
                   {item.attachment_ids.length ? <div className="message-attachments">▧ 引用了 {item.attachment_ids.length} 项资产</div> : null}
                 </div>
                 {proposal ? (
@@ -718,7 +746,11 @@ function ChatChannel({
         {conversation.status === "running" ? (
           <div className="agent-typing">
             <span className="typing-bars"><i /><i /><i /></span>
-            导演组正在交换意见，完成的发言会逐条送达
+            <div>
+              <b>{conversation.current_round ? `R${conversation.current_round}/${conversation.max_rounds}` : "准备中"}</b>
+              <span>{conversation.discussion_note || "导演组正在交换意见，完成的发言会逐条送达"}</span>
+              {conversation.calls_made ? <small>已完成 {conversation.calls_made} 次模型调用</small> : null}
+            </div>
           </div>
         ) : null}
         </div>

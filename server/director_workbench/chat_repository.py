@@ -216,7 +216,10 @@ def _to_json(conversation: Conversation) -> str:
                 for decision_id, card in conversation.decisions.items()
             },
             "active_turn_id": conversation.active_turn_id,
+            "current_round": conversation.current_round,
             "max_rounds": conversation.max_rounds,
+            "discussion_note": conversation.discussion_note,
+            "calls_made": conversation.calls_made,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -327,6 +330,9 @@ def _from_json(document: str) -> Conversation:
             )
             for decision_id, card in raw.get("decisions", {}).items()
         },
-        active_turn_id=raw["active_turn_id"],
-        max_rounds=raw.get("max_rounds", 6),
+        active_turn_id=raw.get("active_turn_id"),
+        current_round=raw.get("current_round", 0),
+        max_rounds=min(4, raw.get("max_rounds", 4)),
+        discussion_note=raw.get("discussion_note", ""),
+        calls_made=raw.get("calls_made", 0),
     )

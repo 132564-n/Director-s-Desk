@@ -38,6 +38,7 @@ from .exporting import build_episode_package
 from .model_gateway import OpenAICompatibleAdapter
 from .model_settings import (
     AgentModelSettings,
+    AgentWorkProfile,
     LocalModelSettingsStore,
     ModelSettings,
     ProviderKind,
@@ -147,6 +148,7 @@ class AgentModelSettingsInput(StrictModel):
     role: str = Field(min_length=1)
     provider_id: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    profile: AgentWorkProfile | None = None
 
 
 class ModelSettingsInput(StrictModel):
@@ -281,6 +283,7 @@ def create_app(
                         role=AgentRole(assignment.role),
                         provider_id=assignment.provider_id,
                         model=assignment.model,
+                        profile=assignment.profile,
                     )
                     for assignment in body.assignments
                 ),

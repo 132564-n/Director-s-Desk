@@ -128,6 +128,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["providers"][0]["kind"], "demo")
         self.assertEqual(len(response.json()["assignments"]), 9)
+        self.assertTrue(all(item["profile"] for item in response.json()["assignments"]))
 
 
 if __name__ == "__main__":

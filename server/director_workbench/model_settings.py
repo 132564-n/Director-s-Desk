@@ -16,6 +16,63 @@ class ProviderKind(StrEnum):
     OPENAI_COMPATIBLE = "openai_compatible"
 
 
+class AgentWorkProfile(StrEnum):
+    CREATIVE = "creative"
+    RIGOROUS = "rigorous"
+    DECISION = "decision"
+    PERFORMANCE = "performance"
+
+
+_ROLE_DEFAULT_PROFILES = {
+    AgentRole.WRITER: AgentWorkProfile.CREATIVE,
+    AgentRole.ART_DIRECTOR: AgentWorkProfile.CREATIVE,
+    AgentRole.STORYBOARD_DIRECTOR: AgentWorkProfile.CREATIVE,
+    AgentRole.CONTINUITY_EDITOR: AgentWorkProfile.RIGOROUS,
+    AgentRole.PROMPT_ENGINEER: AgentWorkProfile.RIGOROUS,
+    AgentRole.CHIEF_DIRECTOR: AgentWorkProfile.DECISION,
+    AgentRole.PLANNER: AgentWorkProfile.DECISION,
+    AgentRole.VOICE_DIRECTOR: AgentWorkProfile.PERFORMANCE,
+    AgentRole.MUSIC_DIRECTOR: AgentWorkProfile.PERFORMANCE,
+}
+
+
+def default_profile_for_role(role: AgentRole) -> AgentWorkProfile:
+    return _ROLE_DEFAULT_PROFILES[role]
+
+
+def effective_profile(assignment: AgentModelSettings) -> AgentWorkProfile:
+    return assignment.profile or default_profile_for_role(assignment.role)
+
+
+def profile_temperature(profile: AgentWorkProfile) -> float:
+    return {
+        AgentWorkProfile.CREATIVE: 0.72,
+        AgentWorkProfile.RIGOROUS: 0.18,
+        AgentWorkProfile.DECISION: 0.28,
+        AgentWorkProfile.PERFORMANCE: 0.58,
+    }[profile]
+
+
+def profile_instruction(profile: AgentWorkProfile) -> str:
+    return {
+        AgentWorkProfile.CREATIVE: (
+            "主动提出有辨识度的创作选择，用具体场面、动作或视听意象支撑判断；"
+            "允许探索，但必须收束成可执行方案。"
+        ),
+        AgentWorkProfile.RIGOROUS: (
+            "优先检查事实、因果、连续性与制作约束；明确指出冲突位置，"
+            "并给出成本最低的修正办法。"
+        ),
+        AgentWorkProfile.DECISION: (
+            "以目标和取舍为中心，区分共识、分歧和必须由用户拍板的事项；"
+            "最后给出唯一的推荐动作。"
+        ),
+        AgentWorkProfile.PERFORMANCE: (
+            "从表演、节奏和听感出发，把情绪词转成停顿、重音、速度、音色或音乐动作。"
+        ),
+    }[profile]
+
+
 @dataclass(frozen=True, slots=True)
 class ProviderSettings:
     id: str
@@ -30,6 +87,7 @@ class AgentModelSettings:
     role: AgentRole
     provider_id: str
     model: str
+    profile: AgentWorkProfile | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +148,11 @@ class LocalModelSettingsStore:
                     role=AgentRole(assignment["role"]),
                     provider_id=assignment["provider_id"],
                     model=assignment["model"],
+                    profile=(
+                        AgentWorkProfile(assignment["profile"])
+                        if assignment.get("profile")
+                        else default_profile_for_role(AgentRole(assignment["role"]))
+                    ),
                 )
                 for assignment in raw["assignments"]
             ),
@@ -116,7 +179,13 @@ class LocalModelSettingsStore:
                 )}
                 for provider in settings.providers
             ],
-            "assignments": [asdict(item) for item in settings.assignments],
+            "assignments": [
+                {
+                    **asdict(item),
+                    "profile": effective_profile(item).value,
+                }
+                for item in settings.assignments
+            ],
         }
 
     def save(self, settings: ModelSettings, *, api_keys: dict[str, str] | None = None) -> None:
@@ -145,7 +214,11 @@ class LocalModelSettingsStore:
                 for provider in settings.providers
             ],
             "assignments": [
-                {**asdict(assignment), "role": assignment.role.value}
+                {
+                    **asdict(assignment),
+                    "role": assignment.role.value,
+                    "profile": effective_profile(assignment).value,
+                }
                 for assignment in settings.assignments
             ],
         }
@@ -171,6 +244,7 @@ def default_model_settings() -> ModelSettings:
                 role=role,
                 provider_id="demo",
                 model="deterministic-v1",
+                profile=default_profile_for_role(role),
             )
             for role in AgentRole
         ),

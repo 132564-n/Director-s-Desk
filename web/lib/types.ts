@@ -134,7 +134,10 @@ export interface AgentModelSettings {
   role: string;
   provider_id: string;
   model: string;
+  profile: AgentWorkProfile;
 }
+
+export type AgentWorkProfile = "creative" | "rigorous" | "decision" | "performance";
 
 export interface ModelSettings {
   providers: ProviderSettings[];
@@ -260,7 +263,10 @@ export interface Conversation {
   proposals: Record<string, Proposal>;
   decisions: Record<string, DecisionCard>;
   active_turn_id: string | null;
+  current_round: number;
   max_rounds: number;
+  discussion_note: string;
+  calls_made: number;
 }
 
 export interface ShelfArtifact {

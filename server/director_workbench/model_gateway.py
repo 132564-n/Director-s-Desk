@@ -24,6 +24,7 @@ class CompletionGateway(Protocol):
         user_prompt: str,
         json_mode: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatCompletion: ...
 
 
@@ -49,6 +50,7 @@ class OpenAICompatibleAdapter:
         user_prompt: str,
         json_mode: bool = False,
         max_tokens: int | None = None,
+        temperature: float | None = None,
     ) -> ChatCompletion:
         body: dict = {
             "model": model,
@@ -56,7 +58,7 @@ class OpenAICompatibleAdapter:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": 0.4,
+            "temperature": 0.4 if temperature is None else temperature,
         }
         if json_mode:
             body["response_format"] = {"type": "json_object"}

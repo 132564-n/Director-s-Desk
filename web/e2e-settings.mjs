@@ -42,9 +42,13 @@ try {
   await provider.getByLabel(/Base URL/).fill("https://model.example/v1");
   await provider.locator('input[type="password"]').fill("test-only-not-a-real-key");
   await page.getByLabel("测试供应商测试模型").fill("test-model");
-  assert.equal(await page.locator(".assignment-row select").count(), 9);
-  await page.locator(".assignment-row select").first().selectOption({ label: "测试供应商" });
+  assert.equal(await page.locator(".assignment-row > select").count(), 9);
+  assert.equal(await page.locator(".profile-select select").count(), 9);
+  await page.locator(".assignment-row > select").first().selectOption({ label: "测试供应商" });
   await page.locator(".assignment-row input").first().fill("test-model");
+  const writerProfile = page.locator(".assignment-row", { hasText: "编剧" }).locator(".profile-select select");
+  await writerProfile.selectOption("rigorous");
+  assert.equal(await writerProfile.inputValue(), "rigorous");
   await page.getByRole("button", { name: "保存并测试连接" }).click();
   await page.getByRole("status").filter({ hasText: "模拟连接成功" }).waitFor();
   assert.equal(await provider.locator('input[type="password"]').inputValue(), "");
@@ -63,7 +67,7 @@ try {
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `Settings overflows at ${width}`);
   }
   assert.deepEqual(errors, []);
-  console.log("PASS: settings navigation, 9 assignments, save/test, secret not echoed, preserve/clear, responsive widths; endpoints mocked, user data unchanged.");
+  console.log("PASS: settings navigation, 9 assignments and work profiles, save/test, secret not echoed, preserve/clear, responsive widths; endpoints mocked, user data unchanged.");
 } finally {
   await browser.close();
 }

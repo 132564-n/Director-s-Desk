@@ -2,7 +2,18 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, getModelSettings, testModelConnection, updateModelSettings } from "@/lib/api";
-import type { AgentModelSettings, ModelSettings, ProviderSettings } from "@/lib/types";
+import type { AgentModelSettings, AgentWorkProfile, ModelSettings, ProviderSettings } from "@/lib/types";
+
+const PROFILE_OPTIONS: Array<{
+  value: AgentWorkProfile;
+  label: string;
+  description: string;
+}> = [
+  { value: "creative", label: "创意探索", description: "更开放，强调画面与新鲜方案" },
+  { value: "rigorous", label: "严谨审校", description: "低随机，优先查冲突与约束" },
+  { value: "decision", label: "决策收束", description: "聚焦取舍，给出唯一推荐动作" },
+  { value: "performance", label: "表演听感", description: "关注情绪、节奏、声音与音乐" },
+];
 
 export function TeamSettings() {
   const [settings, setSettings] = useState<ModelSettings | null>(null);
@@ -100,14 +111,20 @@ export function TeamSettings() {
         ))}
       </div>
 
-      <div className="settings-section-heading"><div><span>ASSIGNMENTS</span><h2>Agent 模型分配</h2></div><small>首版手动指定，不做自动路由</small></div>
+      <div className="settings-section-heading"><div><span>ASSIGNMENTS</span><h2>Agent 模型与工作方式</h2></div><small>工作方式会同时调整角色提示词与创作随机度</small></div>
       <div className="assignment-table">
-        <div className="assignment-head"><span>角色</span><span>供应商</span><span>模型名称</span></div>
+        <div className="assignment-head"><span>角色</span><span>供应商</span><span>模型名称</span><span>工作方式</span></div>
         {settings.assignments.map((assignment, index) => (
           <div className="assignment-row" key={assignment.role}>
             <b>{assignment.role}</b>
             <select aria-label={`${assignment.role}供应商`} value={assignment.provider_id} onChange={(event) => updateAssignment(index, { provider_id: event.target.value })}>{settings.providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}</select>
             <input aria-label={`${assignment.role}模型`} autoComplete="off" spellCheck={false} value={assignment.model} onChange={(event) => updateAssignment(index, { model: event.target.value })} />
+            <label className="profile-select">
+              <select aria-label={`${assignment.role}工作方式`} value={assignment.profile} onChange={(event) => updateAssignment(index, { profile: event.target.value as AgentWorkProfile })}>
+                {PROFILE_OPTIONS.map((profile) => <option key={profile.value} value={profile.value}>{profile.label}</option>)}
+              </select>
+              <small>{PROFILE_OPTIONS.find((profile) => profile.value === assignment.profile)?.description}</small>
+            </label>
           </div>
         ))}
       </div>

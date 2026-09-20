@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from threading import Event
 
 from .chat import ChatMode, ConversationModule
@@ -10,9 +11,16 @@ from .chat_repository import ConversationRepository
 from .configured_drafting import ConfiguredDirectorTeam
 from .decision_memory import DecisionCardDraft, DecisionStatus, parse_decision_drafts
 from .domain import STAGE_ORDER, Stage, StageStatus
-from .drafting import AgentRole, DemoDirectorTeam
+from .drafting import STAGE_TEAMS, AgentRole, DemoDirectorTeam
 from .model_gateway import OpenAICompatibleAdapter
-from .model_settings import LocalModelSettingsStore, ProviderKind
+from .model_settings import (
+    LocalModelSettingsStore,
+    ModelSettings,
+    ProviderKind,
+    effective_profile,
+    profile_instruction,
+    profile_temperature,
+)
 from .repository import WorkflowRepository
 
 
@@ -22,6 +30,14 @@ class TurnOptions:
     mode: ChatMode
     autonomous: bool
     mentions: tuple[AgentRole, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiscussionReview:
+    continue_discussion: bool
+    unresolved_roles: tuple[AgentRole, ...]
+    unresolved_points: tuple[str, ...]
+    reason: str
 
 
 class GroupChatEngine:
@@ -97,37 +113,89 @@ class GroupChatEngine:
                 },
             }, ensure_ascii=False)
 
-            self._run_round(
-                conversation_id,
-                roles,
-                round_number=1,
-                prompt=f"当前请求：{user_message.content}\n会话资料：{context}",
-                reply_to=user_message.id,
-                settings=settings,
-                episode_title=episode.title,
-                stop=stop,
-            )
-            if stop.is_set():
-                return self._mark_stopped(conversation_id)
-
-            if options.autonomous and len(roles) > 1:
+            max_rounds = min(4, max(1, conversation.max_rounds))
+            current_roles = roles
+            focus_points: tuple[str, ...] = ()
+            last_round = 0
+            for round_number in range(1, max_rounds + 1):
                 refreshed = self._conversations.get(conversation_id)
-                recent = "\n".join(
-                    f"{message.sender_name}：{message.content}"
-                    for message in refreshed.messages[-len(roles) :]
-                )
+                if round_number == 1:
+                    round_prompt = f"当前请求：{user_message.content}\n会话资料：{context}"
+                    reply_to = user_message.id
+                else:
+                    recent = "\n".join(
+                        f"{message.sender_name}：{message.content}"
+                        for message in refreshed.messages
+                        if message.created_at >= user_message.created_at
+                    )
+                    round_prompt = (
+                        f"会话资料：{context}\n"
+                        + (
+                            f"本轮只解决：{'；'.join(focus_points)}\n"
+                            if focus_points else ""
+                        )
+                        + "请只回应仍未解决的分歧，"
+                        f"不要重复已经形成的共识：\n{recent}"
+                    )
+                    reply_to = refreshed.messages[-1].id
                 self._run_round(
                     conversation_id,
-                    roles[: min(3, len(roles))],
-                    round_number=2,
-                    prompt=f"会话资料：{context}\n请回应上一轮意见，指出共识或分歧：\n{recent}",
-                    reply_to=refreshed.messages[-1].id,
+                    current_roles,
+                    round_number=round_number,
+                    prompt=round_prompt,
+                    reply_to=reply_to,
                     settings=settings,
                     episode_title=episode.title,
                     stop=stop,
                 )
-            if stop.is_set():
-                return self._mark_stopped(conversation_id)
+                last_round = round_number
+                if stop.is_set():
+                    return self._mark_stopped(conversation_id)
+                if not options.autonomous or len(roles) < 2:
+                    self._update_progress(
+                        conversation_id, note="本轮无需继续交叉讨论，交由总导演收束",
+                    )
+                    break
+                if round_number >= max_rounds:
+                    self._update_progress(
+                        conversation_id, note="已达到四轮上限，交由总导演收束",
+                    )
+                    break
+                if self._uses_demo_evaluator(settings):
+                    if round_number >= 2:
+                        self._update_progress(
+                            conversation_id, note="演示讨论已完成两轮，交由总导演收束",
+                        )
+                        break
+                    current_roles = roles[: min(3, len(roles))]
+                    self._update_progress(
+                        conversation_id, note="演示模式保留一轮交叉回应",
+                    )
+                    continue
+                try:
+                    review = self._evaluate_round(
+                        conversation_id=conversation_id,
+                        user_message=user_message.content,
+                        available_roles=roles,
+                        settings=settings,
+                        round_number=round_number,
+                        turn_started_at=user_message.created_at,
+                    )
+                    note = review.reason or (
+                        "仍有关键分歧" if review.continue_discussion else "已形成可收束共识"
+                    )
+                    self._update_progress(
+                        conversation_id,
+                        note=note,
+                        calls_increment=1,
+                    )
+                except Exception:  # noqa: BLE001 - evaluator failure should not lose the turn
+                    review = DiscussionReview(False, (), (), "轮次判断失败，交由总导演收束")
+                    self._update_progress(conversation_id, note=review.reason)
+                if not review.continue_discussion:
+                    break
+                current_roles = review.unresolved_roles or roles[: min(3, len(roles))]
+                focus_points = review.unresolved_points
 
             proposal_stage = None
             proposal_title = ""
@@ -146,6 +214,17 @@ class GroupChatEngine:
                     configured.draft(episode, proposal_stage, instructions=context)
                     if team is configured else team.draft(episode, proposal_stage)
                 )
+                if team is configured:
+                    providers = {provider.id: provider for provider in settings.providers}
+                    assignments = {assignment.role: assignment for assignment in settings.assignments}
+                    draft_calls = sum(
+                        providers[assignments[role].provider_id].kind
+                        is ProviderKind.OPENAI_COMPATIBLE
+                        for role in STAGE_TEAMS[proposal_stage]
+                    )
+                    self._update_progress(
+                        conversation_id, calls_increment=draft_calls,
+                    )
                 proposal_title = {
                     Stage.OUTLINE: "故事大纲提案",
                     Stage.SCRIPT: "分场剧本提案",
@@ -174,12 +253,14 @@ class GroupChatEngine:
                 + ("提案：已生成演示草案。" if proposal_stage else "提案：本轮不生成正式提案。")
             )
             if chief_provider.kind is not ProviderKind.DEMO:
-                decision, _ = self._respond(
+                decision, _, used_external = self._respond(
                     AgentRole.CHIEF_DIRECTOR,
                     f"资料：{context}\n本轮发言：{opinions}\n"
                     "请给出总导演结论、少数意见和下一步；不能把尚未解决的分歧写成共识。",
-                    3, settings, episode.title,
+                    max(1, last_round), settings, episode.title,
                 )
+                if used_external:
+                    self._update_progress(conversation_id, calls_increment=1)
             decision_drafts: tuple[DecisionCardDraft, ...] = ()
             if chief_provider.kind is not ProviderKind.DEMO:
                 try:
@@ -191,10 +272,12 @@ class GroupChatEngine:
                         opinions=opinions,
                         director_decision=decision,
                     )
+                    self._update_progress(conversation_id, calls_increment=1)
                 except Exception:  # noqa: BLE001 - a card failure must not lose the discussion
                     decision_drafts = ()
             if stop.is_set():
                 return self._mark_stopped(conversation_id)
+            current = self._conversations.get(conversation_id)
             module = ConversationModule(current)
             module.complete_turn(
                 decision=decision,
@@ -203,6 +286,7 @@ class GroupChatEngine:
                 proposal_title=proposal_title,
                 proposal_payload=proposal_payload,
                 decision_drafts=decision_drafts,
+                final_round=max(1, last_round),
             )
             self._conversations.save(module.snapshot())
         # A background turn must always leave an auditable terminal state, including
@@ -227,6 +311,11 @@ class GroupChatEngine:
         episode_title: str,
         stop: Event,
     ) -> None:
+        self._update_progress(
+            conversation_id,
+            round_number=round_number,
+            note=f"第 {round_number} 轮 · {len(roles)} 个专业席位正在交换意见",
+        )
         with ThreadPoolExecutor(max_workers=max(1, len(roles))) as executor:
             futures = {
                 executor.submit(
@@ -243,7 +332,7 @@ class GroupChatEngine:
                 if stop.is_set():
                     return
                 role = futures[future]
-                content, model = future.result()
+                content, model, used_external = future.result()
                 module = ConversationModule(self._conversations.get(conversation_id))
                 module.add_agent_message(
                     role=role,
@@ -252,16 +341,21 @@ class GroupChatEngine:
                     round_number=round_number,
                     reply_to=reply_to,
                 )
+                module.update_discussion_progress(
+                    round_number=round_number,
+                    calls_increment=1 if used_external else 0,
+                )
                 self._conversations.save(module.snapshot())
 
     def _respond(self, role, prompt, round_number, settings, episode_title):
         assignment = next(item for item in settings.assignments if item.role is role)
         provider = next(item for item in settings.providers if item.id == assignment.provider_id)
         if provider.kind is ProviderKind.DEMO:
-            return self._demo_response(role, prompt, round_number), assignment.model
+            return self._demo_response(role, prompt, round_number), assignment.model, False
         api_key = self._model_settings.api_key(provider)
         if not api_key:
             raise RuntimeError(f"{provider.label} 尚未配置 API Key，请打开团队 API 配置")
+        profile = effective_profile(assignment)
         completion = OpenAICompatibleAdapter(
             base_url=provider.base_url,
             api_key=api_key,
@@ -269,11 +363,126 @@ class GroupChatEngine:
             model=assignment.model,
             system_prompt=(
                 f"你是中文 AI 漫剧团队的{role.value}。当前项目是《{episode_title}》。"
+                f"{profile_instruction(profile)}"
                 "像群聊成员一样直接发言，只讨论你的专业判断。不要冒充其他角色。"
+                "默认用150到300个中文字符完成发言，并依次写清“结论、依据、风险或异议、"
+                "建议动作”。确有必要时，把补充材料放在“详细说明”之后；不要靠复述凑长度。"
             ),
             user_prompt=prompt,
+            max_tokens=900,
+            temperature=profile_temperature(profile),
         )
-        return completion.text.strip(), completion.model
+        return completion.text.strip(), completion.model, True
+
+    def _evaluate_round(
+        self,
+        *,
+        conversation_id: str,
+        user_message: str,
+        available_roles: tuple[AgentRole, ...],
+        settings: ModelSettings,
+        round_number: int,
+        turn_started_at: datetime,
+    ) -> DiscussionReview:
+        assignment = next(
+            item for item in settings.assignments
+            if item.role is AgentRole.CHIEF_DIRECTOR
+        )
+        provider = next(
+            item for item in settings.providers if item.id == assignment.provider_id
+        )
+        api_key = self._model_settings.api_key(provider)
+        if not api_key:
+            raise RuntimeError(f"{provider.label} 尚未配置 API Key")
+        conversation = self._conversations.get(conversation_id)
+        transcript = "\n".join(
+            f"R{message.round} {message.sender_name}：{message.content}"
+            for message in conversation.messages
+            if message.kind.value == "agent"
+            and message.created_at >= turn_started_at
+            and message.round <= round_number
+        )
+        completion = OpenAICompatibleAdapter(
+            base_url=provider.base_url,
+            api_key=api_key,
+        ).complete(
+            model=assignment.model,
+            system_prompt=(
+                "你是导演会议的轮次控制员。判断关键创作问题是否仍有真实分歧。"
+                "已经形成共识、开始重复、或剩余只是执行细节时必须停止。"
+                "只有影响叙事、视听方向或制作约束的未决矛盾才继续。"
+                "严格输出JSON对象，不要Markdown："
+                '{"continue":false,"unresolved_roles":[],"unresolved_points":[],"reason":""}'
+            ),
+            user_prompt=(
+                f"用户任务：{user_message}\n当前已完成第{round_number}轮。\n"
+                f"可继续发言角色：{','.join(role.value for role in available_roles)}\n"
+                f"会议记录：\n{transcript}\n"
+                "若继续，只列出确实需要回应的角色；reason用一句中文说明。"
+            ),
+            json_mode=True,
+            max_tokens=500,
+            temperature=0.1,
+        )
+        return self._parse_discussion_review(completion.text, available_roles)
+
+    @staticmethod
+    def _parse_discussion_review(
+        text: str,
+        available_roles: tuple[AgentRole, ...],
+    ) -> DiscussionReview:
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0]
+        payload = json.loads(cleaned.strip())
+        allowed = set(available_roles)
+        parsed_roles = []
+        for value in payload.get("unresolved_roles", []):
+            try:
+                role = AgentRole(value)
+            except (TypeError, ValueError):
+                continue
+            if role in allowed and role not in parsed_roles:
+                parsed_roles.append(role)
+        unresolved_roles = tuple(parsed_roles)
+        unresolved_points = tuple(
+            str(value).strip()
+            for value in payload.get("unresolved_points", [])
+            if str(value).strip()
+        )[:4]
+        should_continue = bool(payload.get("continue")) and bool(unresolved_roles)
+        return DiscussionReview(
+            continue_discussion=should_continue,
+            unresolved_roles=unresolved_roles,
+            unresolved_points=unresolved_points,
+            reason=str(payload.get("reason", "")).strip()[:120],
+        )
+
+    def _uses_demo_evaluator(self, settings: ModelSettings) -> bool:
+        assignment = next(
+            item for item in settings.assignments
+            if item.role is AgentRole.CHIEF_DIRECTOR
+        )
+        provider = next(
+            item for item in settings.providers if item.id == assignment.provider_id
+        )
+        return provider.kind is ProviderKind.DEMO
+
+    def _update_progress(
+        self,
+        conversation_id: str,
+        *,
+        round_number: int | None = None,
+        note: str | None = None,
+        calls_increment: int = 0,
+    ) -> None:
+        module = ConversationModule(self._conversations.get(conversation_id))
+        module.update_discussion_progress(
+            round_number=round_number,
+            note=note,
+            calls_increment=calls_increment,
+        )
+        self._conversations.save(module.snapshot())
 
     def _extract_decisions(
         self,
@@ -328,7 +537,7 @@ class GroupChatEngine:
             AgentRole.MUSIC_DIRECTOR: "音乐应该托住节奏转折，并在对白出现时主动让位。",
             AgentRole.CHIEF_DIRECTOR: "我会收束分歧并提交唯一版本。",
         }[role]
-        if round_number == 2:
+        if round_number > 1:
             return f"回应上一轮：我同意保留核心方向；补充一点，{advice}"
         return f"关于“{subject}”，{advice}"
 

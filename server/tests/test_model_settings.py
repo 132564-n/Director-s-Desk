@@ -10,6 +10,7 @@ import httpx
 from server.director_workbench import (
     AgentModelSettings,
     AgentRole,
+    AgentWorkProfile,
     LocalModelSettingsStore,
     ModelSettings,
     OpenAICompatibleAdapter,
@@ -49,6 +50,37 @@ class ModelSettingsTests(unittest.TestCase):
 
             self.assertEqual(reopened.providers[0].api_key_env, "STUDIO_MODEL_KEY")
             self.assertNotIn("api_key", raw["providers"][0])
+            self.assertEqual(
+                reopened.assignments[0].profile,
+                AgentWorkProfile.DECISION,
+            )
+
+    def test_legacy_assignments_receive_role_default_profiles(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "models.json"
+            path.write_text(json.dumps({
+                "providers": [{
+                    "id": "demo", "label": "演示", "kind": "demo",
+                    "base_url": "", "api_key_env": "",
+                }],
+                "assignments": [
+                    {"role": role.value, "provider_id": "demo", "model": "demo"}
+                    for role in AgentRole
+                ],
+            }, ensure_ascii=False), encoding="utf-8")
+
+            settings = LocalModelSettingsStore(path).load()
+            profiles = {item.role: item.profile for item in settings.assignments}
+
+            self.assertEqual(profiles[AgentRole.WRITER], AgentWorkProfile.CREATIVE)
+            self.assertEqual(
+                profiles[AgentRole.CONTINUITY_EDITOR],
+                AgentWorkProfile.RIGOROUS,
+            )
+            self.assertEqual(
+                profiles[AgentRole.VOICE_DIRECTOR],
+                AgentWorkProfile.PERFORMANCE,
+            )
 
     def test_every_agent_must_have_an_assignment(self) -> None:
         settings = ModelSettings(
@@ -66,6 +98,7 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
             body = json.loads(request.content)
             self.assertEqual(body["model"], "director-model")
             self.assertEqual(body["response_format"], {"type": "json_object"})
+            self.assertEqual(body["temperature"], 0.72)
             return httpx.Response(
                 200,
                 json={
@@ -87,6 +120,7 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
             system_prompt="你是总导演",
             user_prompt="生成大纲",
             json_mode=True,
+            temperature=0.72,
         )
 
         self.assertEqual(result.text, '{"title":"草案"}')
