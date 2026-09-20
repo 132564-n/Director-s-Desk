@@ -185,3 +185,66 @@ class OpenAICompatibleAdapterTests(unittest.TestCase):
                 user_prompt="给出结论",
             )
         self.assertEqual(calls, 3)
+
+    def test_length_limited_empty_completion_retries_with_larger_budget(self) -> None:
+        requested_budgets: list[int] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            requested_budgets.append(body["max_tokens"])
+            content = "最终结论" if body["max_tokens"] >= 1800 else ""
+            return httpx.Response(200, json={
+                "model": "director-model",
+                "choices": [{
+                    "finish_reason": "stop" if content else "length",
+                    "message": {
+                        "content": content,
+                        "reasoning_content": "内部推理，不应作为最终回答",
+                    },
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": body["max_tokens"]},
+            })
+
+        adapter = OpenAICompatibleAdapter(
+            base_url="https://models.example/v1",
+            api_key="local-secret",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        result = adapter.complete(
+            model="director-model",
+            system_prompt="你是总导演",
+            user_prompt="给出结论",
+            max_tokens=900,
+        )
+
+        self.assertEqual(result.text, "最终结论")
+        self.assertEqual(requested_budgets, [900, 1800])
+
+    def test_deepseek_disables_default_thinking_for_agent_replies(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            self.assertEqual(body["thinking"], {"type": "disabled"})
+            return httpx.Response(200, json={
+                "model": "deepseek-flash",
+                "choices": [{
+                    "finish_reason": "stop",
+                    "message": {"content": "直接给出最终结论"},
+                }],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 8},
+            })
+
+        adapter = OpenAICompatibleAdapter(
+            base_url="https://api.deepseek.com",
+            api_key="local-secret",
+            client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+
+        result = adapter.complete(
+            model="deepseek-flash",
+            system_prompt="你是编剧",
+            user_prompt="给出结论",
+            max_tokens=900,
+        )
+
+        self.assertEqual(result.text, "直接给出最终结论")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -64,6 +65,8 @@ class OpenAICompatibleAdapter:
             body["response_format"] = {"type": "json_object"}
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        if urlsplit(self._base_url).hostname == "api.deepseek.com":
+            body["thinking"] = {"type": "disabled"}
         context = nullcontext(self._client) if self._client is not None else httpx.Client(timeout=90)
         with context as client:
             last_finish_reason = "unknown"
@@ -86,6 +89,8 @@ class OpenAICompatibleAdapter:
                         output_tokens=int(usage.get("completion_tokens", 0)),
                         model=payload.get("model", model),
                     )
+                if last_finish_reason == "length" and isinstance(body.get("max_tokens"), int):
+                    body["max_tokens"] = max(body["max_tokens"] * 2, 1024)
         raise RuntimeError(
             "模型连续 3 次返回空内容，请稍后重试或更换模型"
             f"（finish_reason={last_finish_reason}）"
